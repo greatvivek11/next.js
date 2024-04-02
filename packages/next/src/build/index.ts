@@ -185,7 +185,7 @@ import { buildCustomRoute } from '../lib/build-custom-route'
 import { createProgress } from './progress'
 import { traceMemoryUsage } from '../lib/memory/trace'
 import { generateEncryptionKeyBase64 } from '../server/app-render/encryption-utils'
-import { parsePPRConfig } from '../server/lib/experimental/ppr'
+import { isPPRSupported } from '../server/lib/experimental/ppr'
 
 interface ExperimentalBypassForInfo {
   experimentalBypassFor?: RouteHas[]
@@ -717,8 +717,6 @@ export default async function build(
             turborepoAccessTraceResult
           )
         )
-
-      const ppr = parsePPRConfig(config.experimental?.ppr)
 
       process.env.NEXT_DEPLOYMENT_ID = config.deploymentId || ''
       NextBuildContext.config = config
@@ -1966,7 +1964,7 @@ export default async function build(
                   computedManifestData
                 )
 
-                let isPPR = false
+                let supportsPPR = false
                 let isSSG = false
                 let isStatic = false
                 let isServerComponent = false
@@ -2100,8 +2098,8 @@ export default async function build(
                           // If this route can be partially pre-rendered, then
                           // mark it as such and mark that it can be
                           // generated server-side.
-                          if (workerResult.isPPR) {
-                            isPPR = workerResult.isPPR
+                          if (workerResult.supportsPPR) {
+                            supportsPPR = workerResult.supportsPPR
                             isSSG = true
                             isStatic = true
 
@@ -2163,7 +2161,7 @@ export default async function build(
                                 appStaticPaths.set(originalAppPath, [])
                                 appStaticPathsEncoded.set(originalAppPath, [])
                                 isStatic = true
-                                isPPR = false
+                                supportsPPR = false
                               }
                             }
                           }
@@ -2181,7 +2179,7 @@ export default async function build(
                             !isStatic &&
                             !isAppRouteRoute(originalAppPath) &&
                             !isDynamicRoute(originalAppPath) &&
-                            !isPPR &&
+                            !supportsPPR &&
                             !isInterceptionRoute
                           ) {
                             appPrefetchPaths.set(originalAppPath, page)
@@ -2309,7 +2307,7 @@ export default async function build(
                   totalSize,
                   isStatic,
                   isSSG,
-                  isPPR,
+                  supportsPPR,
                   isHybridAmp,
                   ssgPageRoutes,
                   initialRevalidateSeconds: false,
@@ -2603,14 +2601,17 @@ export default async function build(
               // revalidate periods and dynamicParams settings
               appStaticPaths.forEach((routes, originalAppPath) => {
                 const encodedRoutes = appStaticPathsEncoded.get(originalAppPath)
-                const appConfig = appDefaultConfigs.get(originalAppPath) || {}
+                const appConfig = appDefaultConfigs.get(originalAppPath)
 
                 routes.forEach((route, routeIdx) => {
                   defaultMap[route] = {
                     page: originalAppPath,
                     query: { __nextSsgPath: encodedRoutes?.[routeIdx] },
-                    _isDynamicError: appConfig.dynamic === 'error',
+                    _isDynamicError: appConfig?.dynamic === 'error',
                     _isAppDir: true,
+                    _supportsPPR: appConfig
+                      ? isPPRSupported(config.experimental.ppr, appConfig)
+                      : undefined,
                   }
                 })
               })
@@ -2655,6 +2656,7 @@ export default async function build(
                   }
                 }
               }
+
               return defaultMap
             },
           }
@@ -2725,8 +2727,11 @@ export default async function build(
 
             // When this is an app page and PPR is enabled, the route supports
             // partial pre-rendering.
-            const experimentalPPR =
-              !isRouteHandler && ppr.isSupported(page) ? true : undefined
+            const experimentalPPR: true | undefined =
+              !isRouteHandler &&
+              isPPRSupported(config.experimental.ppr, appConfig)
+                ? true
+                : undefined
 
             // this flag is used to selectively bypass the static cache and invoke the lambda directly
             // to enable server actions on static routes
@@ -2813,8 +2818,7 @@ export default async function build(
 
                 finalPrerenderRoutes[route] = {
                   ...routeMeta,
-                  experimentalPPR:
-                    !isRouteHandler && ppr.isSupported(page) ? true : undefined,
+                  experimentalPPR,
                   experimentalBypassFor: bypassFor,
                   initialRevalidateSeconds: revalidate,
                   srcRoute: page,
