@@ -1,15 +1,15 @@
 import type { CacheFs } from '../../../shared/lib/utils'
-import type { PrerenderManifest } from '../../../build'
+import type { PrerenderManifest, SsgRoute } from '../../../build'
 import type {
   IncrementalCacheValue,
   IncrementalCacheEntry,
   IncrementalCache as IncrementalCacheType,
   IncrementalCacheKindHint,
 } from '../../response-cache'
+import type { Revalidate } from '../revalidate'
 
 import FetchCache from './fetch-cache'
 import FileSystemCache from './file-system-cache'
-import path from '../../../shared/lib/isomorphic/path'
 import { normalizePagePath } from '../../../shared/lib/page-path/normalize-page-path'
 
 import {
@@ -19,7 +19,7 @@ import {
   PRERENDER_REVALIDATE_HEADER,
 } from '../../../lib/constants'
 
-function toRoute(pathname: string): string {
+export function toRoute(pathname: string): string {
   return pathname.replace(/\/$/, '').replace(/\/index$/, '') || '/'
 }
 
@@ -189,6 +189,28 @@ export class IncrementalCache implements IncrementalCacheType {
     }
   }
 
+  private readonly revalidateSeconds = new Map<string, Revalidate>()
+
+  private getRevalidateSeconds(route: string): Revalidate | undefined {
+    let revalidateSeconds = this.revalidateSeconds.get(route)
+
+    // If we already have an entry for this pathname, return it.
+    if (typeof revalidateSeconds !== 'undefined') {
+      return revalidateSeconds
+    }
+
+    // Otherwise, source it from the prerender manifest.
+    const ssgRoute: SsgRoute | undefined = this.prerenderManifest.routes[route]
+
+    // If there's no entry, return undefined.
+    if (typeof ssgRoute === 'undefined') {
+      return undefined
+    }
+
+    // If there is an entry, store it in the cache and return it.
+    return ssgRoute.initialRevalidateSeconds
+  }
+
   private calculateRevalidate(
     pathname: string,
     fromTime: number,
@@ -199,12 +221,10 @@ export class IncrementalCache implements IncrementalCacheType {
     if (dev) return new Date().getTime() - 1000
 
     // if an entry isn't present in routes we fallback to a default
-    // of revalidating after 1 second
-    const { initialRevalidateSeconds } = this.prerenderManifest.routes[
-      toRoute(pathname)
-    ] || {
-      initialRevalidateSeconds: 1,
-    }
+    // of revalidating after 1 second.
+    const initialRevalidateSeconds =
+      this.getRevalidateSeconds(toRoute(pathname)) ?? 1
+
     const revalidateAfter =
       typeof initialRevalidateSeconds === 'number'
         ? initialRevalidateSeconds * 1000 + fromTime
@@ -485,8 +505,7 @@ export class IncrementalCache implements IncrementalCacheType {
       }
     }
 
-    const curRevalidate =
-      this.prerenderManifest.routes[toRoute(cacheKey)]?.initialRevalidateSeconds
+    const curRevalidate = this.getRevalidateSeconds(toRoute(cacheKey))
 
     let isStale: boolean | -1 | undefined
     let revalidateAfter: false | number
@@ -584,22 +603,12 @@ export class IncrementalCache implements IncrementalCacheType {
     pathname = this._getPathname(pathname, ctx.fetchCache)
 
     try {
-      // we use the prerender manifest memory instance
-      // to store revalidate timings for calculating
-      // revalidateAfter values so we update this on set
+      // Set the value for the revalidate seconds so if it changes we can
+      // update the cache with the new value.
       if (typeof ctx.revalidate !== 'undefined' && !ctx.fetchCache) {
-        this.prerenderManifest.routes[pathname] = {
-          experimentalPPR: undefined,
-          dataRoute: path.posix.join(
-            '/_next/data',
-            `${normalizePagePath(pathname)}.json`
-          ),
-          srcRoute: null, // FIXME: provide actual source route, however, when dynamically appending it doesn't really matter
-          initialRevalidateSeconds: ctx.revalidate,
-          // Pages routes do not have a prefetch data route.
-          prefetchDataRoute: undefined,
-        }
+        this.revalidateSeconds.set(pathname, ctx.revalidate)
       }
+
       await this.cacheHandler?.set(pathname, data, ctx)
     } catch (error) {
       console.warn('Failed to update prerender cache for', pathname, error)

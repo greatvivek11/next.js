@@ -1,5 +1,6 @@
 import { readFileSync } from 'fs'
 import { runInNewContext } from 'vm'
+import { freeze } from './lib/freeze'
 
 const cache = new Map<string, unknown>()
 
@@ -8,12 +9,16 @@ export function loadManifest(
   shouldCache: boolean = true
 ): unknown {
   const cached = shouldCache && cache.get(path)
-
   if (cached) {
     return cached
   }
 
   const manifest = JSON.parse(readFileSync(path, 'utf8'))
+
+  // Freeze the manifest so it cannot be modified if we're caching it.
+  if (shouldCache) {
+    freeze(manifest)
+  }
 
   if (shouldCache) {
     cache.set(path, manifest)
@@ -27,7 +32,6 @@ export function evalManifest(
   shouldCache: boolean = true
 ): unknown {
   const cached = shouldCache && cache.get(path)
-
   if (cached) {
     return cached
   }
@@ -39,6 +43,11 @@ export function evalManifest(
 
   const contextObject = {}
   runInNewContext(content, contextObject)
+
+  // Freeze the context object so it cannot be modified if we're caching it.
+  if (shouldCache) {
+    freeze(contextObject)
+  }
 
   if (shouldCache) {
     cache.set(path, contextObject)
